@@ -1,0 +1,19 @@
+# Text sensors with general information.
+text_sensor:
+  # Expose ESPHome version as sensor.
+  - platform: version
+    name: $upper_devicename ESPHome Version
+  # Expose WiFi information as sensors.
+  - platform: wifi_info
+    ip_address:
+      name: $upper_devicename IP
+    ssid:
+      name: $upper_devicename SSID
+    bssid:
+      name: $upper_devicename BSSID
+
+# Sensors with general information.
+sensor:
+  # Uptime sensor.
+  - platform: uptime
+    name: $upper_devicename Uptime

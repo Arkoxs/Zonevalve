@@ -1,0 +1,20 @@
+
+# Enable logging
+logger:
+  level: DEBUG
+
+# Set OTA Password    
+ota:
+  password: $ota_password
+
+# Set Wifi credentials
+wifi:
+  ssid: $wifi_ssid
+  password: $wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: $upper_devicename Fallback Hotspot
+    password: $wifi_fallback_password
+
+captive_portal:

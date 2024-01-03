@@ -1,0 +1,370 @@
+substitutions:
+  devicename: "zonevalve"
+  upper_devicename: "Zonevalve"
+  device_friendly_name: "Zonevalve Floorheating"
+  device_comment: "Valve for closing of the floorheating in the livingroom"
+  api_encryption_key: !secret api_encryption
+  ota_password: !secret ota_password
+  wifi_ssid: !secret wifi_ssid
+  wifi_password: !secret wifi_password
+  wifi_fallback_password: !secret fallback_password
+
+esp8266:
+  board: d1_mini
+  restore_from_flash: True
+
+<<: !include common/common.yaml
+<<: !include common/homeassistant.yaml
+<<: !include common/default-sensors.yaml
+
+external_components:
+  - source: github://pr#4257
+    components: [fastled]
+    refresh: always
+
+esphome:
+    name: $devicename
+    friendly_name: $device_friendly_name
+    comment: $device_comment
+    on_boot:
+    - priority: -200.0
+      then:
+      - stepper.report_position: # Set stepper to global variable
+          id: stepper_motor
+          position: !lambda return id(stepper_motor_global);
+      - stepper.set_target: # Set stepper to global variable
+          id: stepper_motor
+          target: !lambda return id(stepper_motor_global);
+      - if: # If valve is Closed
+          condition:
+            - lambda: 'return id(stepper_motor_global) == id(endstop);'
+          then: # Publish state etc.
+            - cover.template.publish:
+                id: $devicename
+                state: CLOSED
+                current_operation: IDLE
+      - if: # If valve is Open
+          condition:
+            - lambda: 'return id(stepper_motor_global) == 0;'
+          then: # Publish state etc.
+            - cover.template.publish:
+                id: $devicename
+                state: OPEN
+                current_operation: IDLE
+      - if: # If valve is Neither
+          condition:
+            - lambda: 'return (id(stepper_motor_global) != 0) && (id(stepper_motor_global) != id(endstop));'
+          then: #  # Publish state etc.
+            - cover.template.publish:
+                id: $devicename
+                position: !lambda 'return (float(float(id(stepper_motor).current_position) / float(id(endstop))));' 
+                current_operation: IDLE
+                
+globals:
+#  - id: valve
+#    type: bool
+#    restore_value: true
+#    initial_value: 'false'
+
+  - id: stepper_motor_global # Integer for storing the stepper position in case of reboot
+    type: int
+    restore_value: True
+    initial_value: '0'
+
+  - id: openclosed # Boolean to store OPEN/CLOSED state
+    type: bool
+    restore_value: True
+    initial_value: '0'
+
+  - id: endstop # Variable for storing ENDSTOP (how far to move stepper)
+    type: int
+    restore_value: True
+    initial_value: '8800'   # this is the max value
+
+
+stepper:
+  - platform: uln2003
+    id: stepper_motor
+    pin_a: D1
+    pin_b: D2
+    pin_c: D3
+    pin_d: D4
+    max_speed: 250
+
+cover:
+  - platform: template
+    name: $upper_devicename livingroom
+    id: $devicename
+    close_action:
+        - if:
+            condition:
+              or:
+                - binary_sensor.is_on: open_override
+                - binary_sensor.is_on: close_override
+            then:
+                - logger.log: "Override enabled, not closing"
+            else:
+              - logger.log: "Closing"
+              - stepper.set_target: 
+                  id: stepper_motor
+                  target: !lambda return id(endstop);
+              - while:
+                  condition:
+                    lambda: 'return id(stepper_motor).current_position < id(endstop);'
+                  then:
+                    - cover.template.publish:
+                        id: $devicename
+                        position: !lambda 'return (float(float(id(stepper_motor).current_position) / float(id(endstop))));' 
+                        current_operation: CLOSING
+                    - delay: 1000 ms
+              - globals.set: # Set global to current position
+                  id: stepper_motor_global
+                  value: !lambda return id(stepper_motor).current_position; 
+              - globals.set: # Set toggle to CLOSED (No need for 'optimistic mode')
+                  id: openclosed
+                  value: '0'
+              - cover.template.publish:
+                  id: $devicename
+                  state: CLOSED 
+                  current_operation: IDLE
+              - light.turn_on:
+                  id: status
+                  brightness: 30%
+                  red: 100%
+                  green: 0%
+                  blue: 0%
+                  transition_length: 0s
+    open_action:
+      then:
+        - if:
+            condition:
+              or:
+                - binary_sensor.is_on: open_override
+                - binary_sensor.is_on: close_override
+            then:
+                - logger.log: "Override enabled, not opening"
+            else:
+              - logger.log: "Opening"
+              - stepper.set_target: # Send stepper to 0
+                  id: stepper_motor
+                  target: '0'
+              - while:
+                  condition:
+                    lambda: 'return id(stepper_motor).current_position > 0;'
+                  then:
+                    - cover.template.publish:
+                        id: $devicename
+                        position: !lambda 'return (float(float(id(stepper_motor).current_position) / float(id(endstop))));' 
+                        current_operation: OPENING
+                    - delay: 1000 ms
+              - globals.set: # Set global to current position
+                  id: stepper_motor_global
+                  value: !lambda return id(stepper_motor).current_position; 
+              - globals.set: # Set toggle to OPEN (No need for 'optimistic mode')
+                  id: openclosed
+                  value: '1'
+              - cover.template.publish:
+                  id: $devicename
+                  state: OPEN
+                  current_operation: IDLE
+              - light.turn_on:
+                  id: status
+                  brightness: 30%
+                  red: 0%
+                  green: 100%
+                  blue: 0%
+                  transition_length: 0s
+    position_action:
+      then:
+        - stepper.set_target:
+            id: stepper_motor
+            target: !lambda return int(id(endstop) * pos);
+        - while:
+            condition:
+              lambda: 'return id(stepper_motor).current_position != int(id(endstop) * pos);'
+            then:
+              - cover.template.publish:
+                  id: $devicename
+                  position: !lambda 'return (float(float(id(stepper_motor).current_position) / float(id(endstop))));' 
+              - delay: 1000 ms
+        - globals.set: # Set global to current position
+            id: stepper_motor_global
+            value: !lambda return id(stepper_motor).current_position; 
+        - cover.template.publish:
+            id: $devicename
+            position: !lambda 'return (float(float(id(stepper_motor).current_position) / float(id(endstop))));' 
+            current_operation: IDLE
+    stop_action:
+      then:
+        - stepper.set_target:
+            id: stepper_motor
+            target: !lambda return id(stepper_motor).current_position;
+        - globals.set: # Set global to current position
+            id: stepper_motor_global
+            value: !lambda return id(stepper_motor).current_position;
+        - cover.template.publish:
+            id: $devicename
+            position: !lambda 'return (float(float(id(stepper_motor).current_position) / float(id(endstop))));' 
+            current_operation: IDLE
+    has_position: true
+    device_class: blind
+
+# Exposed switches.
+switch:
+  # Switch to toggle valve when button is pushed.
+  # It creates a "virtual" switch based
+  # on a global variable.
+#  - platform: template
+#    name: Valve Active
+#    id: valve_active
+#    restore_mode: DISABLED 
+#    turn_on_action:
+#      - globals.set:
+#          id: valve
+#          value: 'true'
+#    turn_off_action:
+#      - globals.set:
+#          id: valve
+#          value: 'false'
+#    lambda: |-
+#      return id(valve);
+
+  - platform: template
+    name: Reset $upper_devicename livingroom
+    id: reset
+    turn_on_action:
+      - stepper.set_target:
+          id: stepper_motor
+          target: '1500'
+      - wait_until: 
+          lambda: 'return id(stepper_motor).current_position == 1500;'
+      - delay: 1s
+      - stepper.set_target:
+          id: stepper_motor
+          target: '0'
+      - globals.set: # Set global to current position
+          id: stepper_motor_global
+          value: !lambda return id(stepper_motor).current_position; 
+      - globals.set: # Set toggle to CLOSED (No need for 'optimistic mode')
+          id: openclosed
+          value: '0'
+      - cover.template.publish:
+          id: $devicename
+          state: CLOSED
+          current_operation: IDLE
+      - switch.turn_off: reset
+  - platform: restart
+    name: $upper_devicename Restart
+
+binary_sensor:
+  - platform: gpio
+    pin: 
+      number: GPIO13
+      inverted: False
+      mode:
+        input: True
+    name: $upper_devicename Open Valve override
+    id: open_override
+    device_class: door
+    filters:
+      - delayed_on: 100ms
+    on_press:
+      then:
+        - logger.log: "Open Valve override button pressed"
+        - light.turn_on:
+            id: status
+            brightness: 60%
+            red: 0%
+            green: 100%
+            blue: 0%
+            transition_length: 0s
+        - logger.log: "Opening valve"
+        - stepper.set_target: # Send stepper to 0
+            id: stepper_motor
+            target: '0'
+        - while:
+            condition:
+              lambda: 'return id(stepper_motor).current_position > 0;'
+            then:
+              - cover.template.publish:
+                  id: $devicename
+                  position: !lambda 'return (float(float(id(stepper_motor).current_position) / float(id(endstop))));' 
+                  current_operation: OPENING
+              - delay: 1000 ms
+        - globals.set: # Set global to current position
+            id: stepper_motor_global
+            value: !lambda return id(stepper_motor).current_position; 
+        - globals.set: # Set toggle to OPEN (No need for 'optimistic mode')
+            id: openclosed
+            value: '1'
+        - cover.template.publish:
+            id: $devicename
+            state: OPEN
+            current_operation: IDLE
+    on_release:
+      then:
+        - logger.log: "Open Valve override button released"
+        - light.turn_on:
+            id: status
+            brightness: 30%
+            transition_length: 0s
+  - platform: gpio
+    pin: 
+      number: GPIO15
+      inverted: False
+      mode:
+        input: True
+    name: $upper_devicename Close Valve override
+    id: close_override
+    device_class: door
+    filters:
+      - delayed_on: 100ms
+    on_press:
+      then:
+        - logger.log: "Close Valve override button pressed"
+        - light.turn_on:
+            id: status
+            brightness: 60%
+            red: 100%
+            green: 0%
+            blue: 0%
+            transition_length: 0s
+        - logger.log: "Closing valve"
+        - stepper.set_target: 
+            id: stepper_motor
+            target: !lambda return id(endstop);
+        - while:
+            condition:
+              lambda: 'return id(stepper_motor).current_position < id(endstop);'
+            then:
+              - cover.template.publish:
+                  id: $devicename
+                  position: !lambda 'return (float(float(id(stepper_motor).current_position) / float(id(endstop))));' 
+                  current_operation: CLOSING
+              - delay: 1000 ms
+        - globals.set: # Set global to current position
+            id: stepper_motor_global
+            value: !lambda return id(stepper_motor).current_position; 
+        - globals.set: # Set toggle to CLOSED (No need for 'optimistic mode')
+            id: openclosed
+            value: '0'
+        - cover.template.publish:
+            id: $devicename
+            state: CLOSED 
+            current_operation: IDLE
+    on_release:
+      then:
+        - logger.log: "Close Valve override button released"
+        - light.turn_on:
+            id: status
+            brightness: 30%
+            transition_length: 0s
+
+light:
+  - platform: fastled
+    chipset: SK6812
+    data_pin: D5
+    num_leds: 1
+    rgb_order: GRB
+    name: $upper_devicename Light
+    id: status
